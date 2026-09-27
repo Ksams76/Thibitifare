@@ -2,7 +2,7 @@
 // SET THIS to your backend's public URL (your ngrok forwarding address,
 // or your real domain once you're not on ngrok anymore). No trailing slash.
 // ---------------------------------------------------------------------------
-const API_BASE = "https://anybody-fall-snippet.ngrok-free.dev";
+const API_BASE = "https://thibitifare-production.up.railway.app";
 
 // ---- shared helpers -------------------------------------------------------
 
