@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>ThibitiFare</title>
+  <link rel="manifest" href="/Manifest.json" />
+  <meta name="theme-color" content="#0f6e4f" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header class="hero">
+      <h1><span class="brand-thibiti">Thibiti</span><span class="brand-fare">Fare</span></h1>
+      <p class="sub">Confirm the fare</p>
+    </header>
+
+    <!-- Flow 1: conductor sends the commuter an STK push prompt -->
+    <section class="card">
+      <h2>Send payment prompt</h2>
+      <p class="muted">Push an M-Pesa prompt straight to the passenger's phone.</p>
+
+      <form id="pushForm" novalidate>
+        <label for="phone">Passenger phone number</label>
+        <input
+          id="phone"
+          name="phone"
+          type="tel"
+          inputmode="numeric"
+          pattern="0\d{9}"
+          maxlength="10"
+          placeholder="07XXXXXXXX"
+          required
+        />
+        <p class="hint">10 digits, starting with 0</p>
+
+        <div class="row">
+          <div class="field">
+            <label for="amount">Fare (KES)</label>
+            <input id="amount" name="amount" type="number" min="1" step="1" required />
+          </div>
+          <div class="field">
+            <label for="route">Route</label>
+            <input id="route" name="route" type="text" maxlength="40" required />
+          </div>
+        </div>
+
+        <button id="pushBtn" type="submit" disabled>Send prompt</button>
+        <p id="pushStatus" class="status" data-state="idle"></p>
+      </form>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- Flow 2: conductor verifies a code the commuter typed in or showed -->
+    <section class="card">
+      <h2>Verify a payment</h2>
+      <p class="muted">
+        Check a transaction code against Safaricom's record before you wave them through.
+      </p>
+
+      <form id="verifyForm" novalidate>
+        <label for="txCode">Transaction code</label>
+        <input
+          id="txCode"
+          name="txCode"
+          type="text"
+          maxlength="15"
+          placeholder="QAB1XYZ23"
+          required
+        />
+
+        <label for="expectedAmount">Expected fare (KES)</label>
+        <input id="expectedAmount" name="expectedAmount" type="number" min="1" step="1" required />
+
+        <button id="verifyBtn" type="submit" disabled>Verify</button>
+        <p id="verifyStatus" class="status" data-state="idle"></p>
+      </form>
+    </section>
+
+    <footer class="foot">
+      <p>ThibitiFare &mdash; matatu fare verification against Safaricom's own record.</p>
+    </footer>
+  </main>
+
+  <script type="module" src="/script.js"></script>
+</body>
+</html>
