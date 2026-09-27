@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: thibitifare-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DARAJA_CONSUMER_KEY
+        sync: false
+      - key: DARAJA_CONSUMER_SECRET
+        sync: false
+      - key: DARAJA_SHORTCODE
+        value: "174379"
+      - key: DARAJA_PASSKEY
+        sync: false
+      - key: DARAJA_ENV
+        value: sandbox
+      - key: DARAJA_VERIFY_STUB
+        value: "true"
+      - key: DARAJA_CALLBACK_URL
+        sync: false
+      - key: FRONTEND_ORIGINS
+        sync: false
