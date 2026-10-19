@@ -94,30 +94,21 @@ running, in the next step.
 
 ---
 
-## 5. Expose your backend with ngrok
+## 5. Deployment
 
-Daraja can't send callbacks to `localhost`, so you need a public URL.
+ThibitiFare runs in production on:
 
-```bash
-ngrok http 8000
-```
+- **Backend (FastAPI):** Railway, built from the `Dockerfile`
+- **Frontend (PWA):** Netlify
+- **Live app:** https://genuine-longma-e2b1ad.netlify.app/
 
-Copy the `https://...ngrok-free.dev` "Forwarding" URL it prints, then:
+Set `DARAJA_CALLBACK_URL` in the Railway service's **Variables** tab to your Railway
+public URL (no trailing slash). In `script.js`, `API_BASE` also points to the Railway
+URL. No tunneling tool is needed.
 
-1. Paste it into `.env` as `DARAJA_CALLBACK_URL` (no trailing slash), e.g.:
-   ```
-   DARAJA_CALLBACK_URL=https://anybody-fall-snippet.ngrok-free.dev
-   ```
-2. Paste the **same URL** into `script.js` at the top:
-   ```js
-   const API_BASE = "https://anybody-fall-snippet.ngrok-free.dev";
-   ```
+### Run the backend locally (optional)
 
-> **The free ngrok URL changes every time you restart ngrok.** Whenever that
-> happens, update it in both places above and restart the backend.
-
-Now start the backend (from the project root, with the venv active):
-
+From the project root, with the venv active:
 ```bash
 uvicorn app.main:app --reload --reload-dir app
 ```
