@@ -30,7 +30,7 @@ class Settings:
     # --- Environment: "sandbox" or "production" ---
     ENV: str = os.getenv("DARAJA_ENV", "sandbox")
 
-    # --- Your public callback URL (ngrok URL during development, no trailing slash) ---
+  # --- Your public callback URL (your Railway URL in production, no trailing slash) ---
     CALLBACK_URL: str = _require("DARAJA_CALLBACK_URL")
 
     # --- Used for TransactionStatusQuery (the /verify endpoint's real path) ---

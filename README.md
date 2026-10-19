@@ -17,8 +17,6 @@ Frontend: a small installable Progressive Web App (vanilla JS + Vite).
 
 - **Python 3.10+**
 - **Node.js 18+** (for the frontend dev server)
-- **ngrok** (or any tunneling tool) — Daraja needs a public HTTPS URL to send
-  callbacks to, and `localhost` isn't reachable from Safaricom's servers.
 - A **Daraja sandbox app** at https://developer.safaricom.co.ke — see step 3.
 
 ---
@@ -85,13 +83,12 @@ DARAJA_CONSUMER_SECRET=<from step 3.2>
 DARAJA_SHORTCODE=174379          # sandbox default, leave as-is
 DARAJA_PASSKEY=<from step 3.3>
 DARAJA_ENV=sandbox
-DARAJA_CALLBACK_URL=             # fill this in AFTER starting ngrok — see step 5
-DARAJA_VERIFY_STUB=true          # leave true unless you've done step 6
+DARAJA_CALLBACK_URL=             
+DARAJA_VERIFY_STUB=true        
 ```
 
-Leave `DARAJA_CALLBACK_URL` blank for now — you'll fill it in once ngrok is
-running, in the next step.
-
+Set `DARAJA_CALLBACK_URL` to your Railway public URL (no trailing slash). For local
+testing you can leave it blank, but the STK Push callback only works with a public URL.
 ---
 
 ## 5. Deployment
@@ -114,7 +111,7 @@ uvicorn app.main:app --reload --reload-dir app
 ```
 
 You should see `Application startup complete.` Visit
-`https://<your-ngrok-url>/` in a browser — you should get back
+`https://localhost:8000/` in a browser — you should get back
 `{"status": "ok", ...}`.
 
 ---
@@ -204,8 +201,8 @@ message (not a silent crash) telling you what's missing.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Browser console shows a CORS error | Your ngrok URL in `script.js` doesn't match your running backend, or you forgot to restart uvicorn after editing `.env` | Double-check `API_BASE` in `script.js` and `DARAJA_CALLBACK_URL` in `.env` match your **current** ngrok URL |
-| `net::ERR_FAILED` on every request, with a CORS-looking message | ngrok's free-tier interstitial warning page | Already handled — `script.js` sends `ngrok-skip-browser-warning: true` on every request |
+| Browser console shows a CORS error | `API_BASE` in `script.js` doesn't match your Railway backend URL, the backend's CORS settings don't allow your Netlify domain, or the Railway service needs a redeploy after changing variables | Double-check `API_BASE` in `script.js` and `DARAJA_CALLBACK_URL` in Railway's Variables tab, make sure both use your **current** Railway URL, and allow `https://genuine-longma-e2b1ad.netlify.app` in the backend's CORS origins |
+
 | "Still waiting" even though you entered your PIN | Daraja's sandbox callback can genuinely take a minute or two | Just wait — polling runs for up to 3 minutes before giving up |
 | "Rule limited" as the failure reason | Safaricom's sandbox is rate-limiting you from rapid repeated test requests | Wait a few minutes between test runs |
 | Backend crashes with `httpx.ConnectTimeout` | Your machine briefly couldn't reach Safaricom's servers | Already handled — all Daraja calls now catch this and report it as a normal `DarajaError` instead of a 500 |
@@ -221,6 +218,6 @@ message (not a silent crash) telling you what's missing.
 - Move `API_BASE` in `script.js` to a build-time environment variable instead
   of a hardcoded string.
 - Deploy the backend somewhere with a stable HTTPS URL (Render, Fly.io,
-  Railway, etc.) so you're not dependent on ngrok's rotating free URLs.
+  Railway, etc.)
 - Get your own production Shortcode + Passkey once you have a real
   paybill/till number, and set `DARAJA_ENV=production`.

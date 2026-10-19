@@ -1,6 +1,5 @@
 // ---------------------------------------------------------------------------
-// SET THIS to your backend's public URL (your ngrok forwarding address,
-// or your real domain once you're not on ngrok anymore). No trailing slash.
+// Your backend's public URL (the Railway deployment). No trailing slash.
 // ---------------------------------------------------------------------------
 const API_BASE = "https://thibitifare-production.up.railway.app";
 
@@ -22,7 +21,6 @@ async function postJSON(path, body) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "ngrok-skip-browser-warning": "true",
     },
     body: JSON.stringify(body),
   });
@@ -44,11 +42,7 @@ async function postJSON(path, body) {
 }
 
 async function getJSON(path) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "ngrok-skip-browser-warning": "true",
-    },
-  });
+  const res = await fetch(`${API_BASE}${path}`,);
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     throw new Error((data && data.detail) || `Server responded ${res.status}`);
