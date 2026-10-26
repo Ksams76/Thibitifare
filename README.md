@@ -4,9 +4,9 @@ A matatu fare-verification app. Conductors can either:
 
 1. **Send a payment prompt** — an M-Pesa STK push straight to the passenger's
    phone, with live status tracking until it succeeds or fails.
-2. **Verify a payment** — check a transaction code the passenger typed in (or
-   showed on an old screenshot) against Safaricom's own record, catching
-   fabricated codes, reused codes, and amount mismatches.
+2. **Verify a payment** — match a transaction code against a receipt from a
+   successful ThibitiFare STK callback, or query Safaricom directly when real
+   TransactionStatusQuery mode is configured.
 
 Backend: Python (FastAPI) talking to Safaricom's Daraja API.
 Frontend: a small installable Progressive Web App (vanilla JS + Vite).
@@ -27,12 +27,15 @@ Frontend: a small installable Progressive Web App (vanilla JS + Vite).
 thibitifare/
 ├── app/                       # FastAPI backend
 │   ├── __init__.py
+│   ├── auth.py                # Firebase ID token and role checks
 │   ├── config.py              # reads .env, exposes `settings`
 │   ├── daraja.py              # all calls to Safaricom's Daraja API
 │   ├── main.py                # FastAPI routes
+│   ├── storage.py             # SQLite transaction repository and migrations
 │   └── security_credential.py # RSA-encrypts the initiator password (real /verify only)
 ├── certs/                     # put Safaricom's public cert here (real /verify only)
 ├── requirements.txt
+├── scripts/assign_firebase_role.py # trusted admin/conductor role provisioning
 ├── .env.example                # copy to .env and fill in
 ├── package.json               # frontend (Vite) config
 ├── index.html
@@ -83,12 +86,79 @@ DARAJA_CONSUMER_SECRET=<from step 3.2>
 DARAJA_SHORTCODE=174379          # sandbox default, leave as-is
 DARAJA_PASSKEY=<from step 3.3>
 DARAJA_ENV=sandbox
-DARAJA_CALLBACK_URL=             
-DARAJA_VERIFY_STUB=true        
+DARAJA_CALLBACK_URL=https://your-public-host.example
+DARAJA_VERIFY_STUB=true
+THIBITIFARE_DATABASE_PATH=data/thibitifare.sqlite3
+THIBITIFARE_PHONE_ENCRYPTION_KEY=<URL-safe base64 encoding of 32 random bytes>
+FIREBASE_PROJECT_ID=<your Firebase project ID>
+FIREBASE_API_KEY=<your Firebase web API key>
+FIREBASE_AUTH_DOMAIN=<your-project-id>.firebaseapp.com
+FIREBASE_APP_ID=<your Firebase web app ID>
 ```
 
-Set `DARAJA_CALLBACK_URL` to your Railway public URL (no trailing slash). For local
-testing you can leave it blank, but the STK Push callback only works with a public URL.
+Set `DARAJA_CALLBACK_URL` to your Railway public URL (no trailing slash). The
+setting is required for the backend to start, and STK Push callbacks require a
+publicly reachable HTTPS URL; an empty value is not supported.
+
+Generate a unique phone-encryption key for each environment and keep it backed
+up separately from the database. For example, with Python:
+
+```powershell
+python -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+```
+
+The key is required to start the backend because passenger phone numbers are
+encrypted in SQLite. Losing or rotating it without re-encrypting stored rows
+will make those phone numbers unreadable. The default database path is relative
+to the backend working directory; use a persistent volume path in deployed
+environments. The Render blueprint mounts `/var/data`; for Railway, attach a
+volume and set `THIBITIFARE_DATABASE_PATH` to a file under its mount path.
+`POST /stk-push` also requires an `Idempotency-Key` UUID header; retries with
+the same key and details reuse the stored checkout rather than sending a second
+payment prompt.
+
+### Configure conductor sign-in
+
+1. Create a Firebase project, register a Web app, and enable **Email/Password**
+   under Authentication sign-in providers. Add the Netlify app domain to
+   Firebase Authentication's authorized domains.
+2. Set the `FIREBASE_*` web-app values shown above in the backend environment.
+   The web API key, auth domain, project ID, and app ID are public Firebase
+   client configuration served by `GET /auth/config`. Never put a
+   service-account key in the web app or source control.
+3. Give the backend a Firebase Admin service account with
+   `GOOGLE_APPLICATION_CREDENTIALS` pointing to a protected JSON file, or set
+   `FIREBASE_SERVICE_ACCOUNT_JSON` as a server-side secret in the deployment
+   platform. Grant only the Firebase Authentication permissions needed to
+   verify/revoke tokens and manage user claims. This credential is required
+   for token revocation checks and role management. Do not paste it into chat,
+   commit it, or include it in frontend build variables.
+4. Create the first Firebase user in the Firebase console. Assign the
+   administrator role locally from the project root:
+
+   ```powershell
+   .\venv\Scripts\python.exe scripts\assign_firebase_role.py --email admin@example.com --role admin
+   ```
+
+5. Create conductor accounts in Firebase Authentication. An administrator can
+   find the new user's UID in Firebase console, sign in to the PWA, and assign
+   the `conductor` role from **Administrator tools**. The protected API revokes
+   the user's existing refresh tokens. The local provisioning command is for
+   the initial administrator/bootstrap path.
+
+The PWA provides sign-in and password-reset only; it does not provide public
+account creation. Firebase accounts without an assigned role cannot access
+payment routes. Role changes require the affected user to sign in again.
+
+Firebase tokens use trusted `role` custom claims; an account without an `admin`
+or `conductor` role receives 403 from protected routes. The backend rechecks
+token revocation. Both roles may submit payments and verify receipts; only
+administrators may read the audit log. Daraja callback endpoints remain
+unauthenticated because Safaricom calls them directly; callback authenticity
+still needs a provider-supported verification mechanism. Administrators may
+remove an account's application role to revoke ThibitiFare access without
+deleting the Firebase account.
+
 ---
 
 ## 5. Deployment
@@ -158,10 +228,10 @@ There are two ways `/verify` can check a code, controlled by
 
 Every STK push ThibitiFare sends already gets a real callback from Safaricom
 confirming success, with the real M-Pesa receipt number, amount, and phone
-number attached (`/daraja/callback` in `main.py`, feeding the
-`known_receipts` store). `/verify` just checks a typed-in code against that
-store — instant, reliable, no extra round-trip to Daraja. **This is what you
-want for demos and for verifying codes ThibitiFare itself issued.**
+number attached (`/daraja/callback` in `main.py`, persisted in SQLite).
+`/verify` just checks a typed-in code against those transaction records —
+instant, reliable, no extra round-trip to Daraja. **This is what you want for
+demos and for verifying codes ThibitiFare itself issued.**
 
 ### Real mode (`DARAJA_VERIFY_STUB=false`)
 
@@ -172,7 +242,9 @@ ask Safaricom directly via **TransactionStatusQuery**. This API is
 accepted; the real answer (verified / not found / amount) is POSTed later to
 `/daraja/transaction-status-result`, sometimes several seconds afterward.
 
-This is fully wired up and automatic:
+The asynchronous code path is implemented, but has not been verified against an
+active Daraja account in this environment. Provider permissions, callback delivery,
+and the account-specific response shape still need a sandbox integration check:
 
 1. `POST /verify` kicks off the query and immediately returns
    `{"result": "pending", "transaction_id": "<code>"}`.
@@ -185,8 +257,8 @@ This is fully wired up and automatic:
 
 **Real mode also needs:**
 - `DARAJA_INITIATOR_NAME` / `DARAJA_INITIATOR_PASSWORD` set in `.env`
-  (sandbox defaults are `testapi` / `Safaricom999!*!` — already filled in
-  `.env.example`).
+  using values issued for your Daraja account; the application does not supply
+  a default initiator password.
 - Safaricom's public certificate saved at `certs/sandbox_public_key.pem`
   (see `certs/README.txt` and step 3.4 above).
 - The `cryptography` package (already in `requirements.txt`) to RSA-encrypt
@@ -194,6 +266,38 @@ This is fully wired up and automatic:
 
 If any of that's missing, real-mode `/verify` will fail with a clear error
 message (not a silent crash) telling you what's missing.
+
+### Automated checks
+
+Run the local checks from the project root:
+
+```bash
+python -m unittest discover -s tests -v
+npm run build
+```
+
+The backend tests mock Daraja and do not send payment requests. Do not point
+automated checks at production credentials or trigger live-money transactions.
+
+### Current operational limitations
+
+- Transaction requests, used receipt codes, and verification callbacks are
+  stored in SQLite and survive process restarts when the configured database
+  path is on persistent storage. SQLite on ephemeral storage is not durable
+  across deployment replacement. Back up the database and its encryption key.
+- STK idempotency keys and receipt claims are persisted and use database
+  transactions for atomic updates. Every STK API caller must send an
+  `Idempotency-Key`; the PWA already does.
+- Firebase sign-in is required for conductor payment, verification, and status
+  endpoints. Callback authenticity and provider-specific callback security
+  still need a separate live integration review.
+- Authenticated API activity and Daraja callback outcomes are stored in the
+  SQLite audit log. Administrators can read it using `GET /admin/audit-events`;
+  entries intentionally omit phone numbers and transaction codes.
+- A network timeout while submitting STK Push has an unknown outcome. Check the
+  passenger's phone before submitting again to avoid creating another prompt.
+- The production Daraja flow, provider callback delivery, and callback security
+  have not been certified in this environment.
 
 ---
 
@@ -212,9 +316,9 @@ message (not a silent crash) telling you what's missing.
 
 ## 10. Next steps (post-hackathon)
 
-- Swap the in-memory `stk_requests` / `used_codes` / `known_receipts` /
-  `pending_verifications` dicts in `main.py` for a real database (you already
-  have a MySQL schema in progress for this).
+- Plan a move to managed relational storage if concurrency or operational scale
+  outgrows SQLite. The current SQLite database is intended for a single host
+  with a mounted persistent volume.
 - Move `API_BASE` in `script.js` to a build-time environment variable instead
   of a hardcoded string.
 - Deploy the backend somewhere with a stable HTTPS URL (Render, Fly.io,

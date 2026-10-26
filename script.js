@@ -1,7 +1,19 @@
+import { initializeApp } from "@firebase/app";
+import {
+  getAuth,
+  onAuthStateChanged,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  signOut,
+} from "@firebase/auth";
+
 // ---------------------------------------------------------------------------
 // Your backend's public URL (the Railway deployment). No trailing slash.
 // ---------------------------------------------------------------------------
 const API_BASE = "https://thibitifare-production.up.railway.app";
+
+let firebaseAuth = null;
+let currentUser = null;
 
 // ---- shared helpers -------------------------------------------------------
 
@@ -16,11 +28,15 @@ function toDarajaPhone(localNumber) {
   return "254" + localNumber.slice(1);
 }
 
-async function postJSON(path, body) {
+async function postJSON(path, body, extraHeaders = {}) {
+  if (!currentUser) throw new Error("Sign in to continue.");
+  const idToken = await currentUser.getIdToken();
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Authorization: `Bearer ${idToken}`,
+      ...extraHeaders,
     },
     body: JSON.stringify(body),
   });
@@ -35,6 +51,10 @@ async function postJSON(path, body) {
   if (!res.ok) {
     const message =
       (data && (data.detail || data.message)) || `Server responded ${res.status}`;
+    if (res.status === 401) {
+      if (firebaseAuth) await signOut(firebaseAuth);
+      throw new Error("Your sign-in expired. Please sign in again.");
+    }
     throw new Error(typeof message === "string" ? message : JSON.stringify(message));
   }
 
@@ -42,13 +62,216 @@ async function postJSON(path, body) {
 }
 
 async function getJSON(path) {
-  const res = await fetch(`${API_BASE}${path}`,);
+  if (!currentUser) throw new Error("Sign in to continue.");
+  const idToken = await currentUser.getIdToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
   const data = await res.json().catch(() => null);
   if (!res.ok) {
+    if (res.status === 401) {
+      if (firebaseAuth) await signOut(firebaseAuth);
+      throw new Error("Your sign-in expired. Please sign in again.");
+    }
     throw new Error((data && data.detail) || `Server responded ${res.status}`);
   }
   return data;
 }
+
+const loginForm = document.getElementById("loginForm");
+const loginEmail = document.getElementById("loginEmail");
+const loginPassword = document.getElementById("loginPassword");
+const loginBtn = document.getElementById("loginBtn");
+const resetPasswordBtn = document.getElementById("resetPasswordBtn");
+const signOutBtn = document.getElementById("signOutBtn");
+const signedInControls = document.getElementById("signedInControls");
+const accountStatus = document.getElementById("accountStatus");
+const authStatus = document.getElementById("authStatus");
+const protectedApp = document.getElementById("protectedApp");
+const adminTools = document.getElementById("adminTools");
+const roleForm = document.getElementById("roleForm");
+const targetUid = document.getElementById("targetUid");
+const targetRole = document.getElementById("targetRole");
+const roleBtn = document.getElementById("roleBtn");
+const roleStatus = document.getElementById("roleStatus");
+const loadAuditBtn = document.getElementById("loadAuditBtn");
+const auditEvents = document.getElementById("auditEvents");
+
+function checkLoginReady() {
+  loginBtn.disabled = !firebaseAuth || !loginForm.checkValidity();
+  resetPasswordBtn.disabled = !firebaseAuth || !loginEmail.value.trim();
+}
+
+[loginEmail, loginPassword].forEach((element) =>
+  element.addEventListener("input", checkLoginReady)
+);
+
+function showAuthError(message) {
+  setStatus(authStatus, message, "error");
+}
+
+function updateSignedInView(user, role) {
+  const previousUser = currentUser;
+  currentUser = user;
+  if (!user || (previousUser && previousUser.uid !== user.uid)) {
+    stopTimer(pushTimer);
+    stopTimer(verifyTimer);
+    pushIdempotencyKey = null;
+    roleForm.reset();
+    auditEvents.replaceChildren();
+  }
+  loginForm.hidden = Boolean(user);
+  signedInControls.hidden = !user;
+  const authorized = role === "admin" || role === "conductor";
+  protectedApp.hidden = !authorized;
+  adminTools.hidden = role !== "admin";
+  if (!user) {
+    setStatus(authStatus, "Sign in with your conductor account to continue.", "idle");
+    checkRoleReady();
+    return;
+  }
+  if (!authorized) {
+    setStatus(accountStatus, "This account has not been authorized. Contact your administrator.", "error");
+    checkRoleReady();
+    return;
+  }
+  setStatus(accountStatus, `Signed in as ${user.email || "conductor"}.`, "ok");
+  setStatus(authStatus, "", "idle");
+  checkRoleReady();
+}
+
+function checkRoleReady() {
+  roleBtn.disabled = !currentUser || !roleForm.checkValidity();
+}
+
+targetUid.addEventListener("input", checkRoleReady);
+
+roleForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!roleForm.checkValidity()) return;
+  roleBtn.disabled = true;
+  setStatus(roleStatus, "Updating account role…", "pending");
+  try {
+    await postJSON(
+      `/admin/users/${encodeURIComponent(targetUid.value.trim())}/role`,
+      { role: targetRole.value }
+    );
+    setStatus(
+      roleStatus,
+      "Access updated. The user must sign in again for the change to take effect.",
+      "ok"
+    );
+    roleForm.reset();
+  } catch (error) {
+    setStatus(roleStatus, `Role update failed — ${error.message}`, "error");
+  } finally {
+    checkRoleReady();
+  }
+});
+
+loadAuditBtn.addEventListener("click", async () => {
+  loadAuditBtn.disabled = true;
+  try {
+    const data = await getJSON("/admin/audit-events?limit=20");
+    auditEvents.replaceChildren();
+    for (const event of data.events) {
+      const item = document.createElement("li");
+      item.textContent =
+        `${event.created_at} — ${event.action} — ${event.actor_uid}` +
+        `${event.subject_uid ? ` → ${event.subject_uid}` : ""} — HTTP ${event.response_status}`;
+      auditEvents.append(item);
+    }
+    if (!data.events.length) {
+      const item = document.createElement("li");
+      item.textContent = "No activity recorded yet.";
+      auditEvents.append(item);
+    }
+  } catch (error) {
+    setStatus(authStatus, `Audit log unavailable — ${error.message}`, "error");
+  } finally {
+    loadAuditBtn.disabled = false;
+  }
+});
+
+async function initializeAuthentication() {
+  try {
+    const response = await fetch(`${API_BASE}/auth/config`);
+    if (!response.ok) throw new Error("Could not load sign-in configuration.");
+    const config = await response.json();
+    if (!config.enabled) {
+      showAuthError("Sign-in is not configured on the server yet.");
+      loginForm.hidden = true;
+      return;
+    }
+
+    firebaseAuth = getAuth(initializeApp(config.firebase));
+    checkLoginReady();
+    onAuthStateChanged(firebaseAuth, async (user) => {
+      if (!user) {
+        updateSignedInView(null, null);
+        return;
+      }
+      try {
+        const token = await user.getIdTokenResult();
+        if (firebaseAuth.currentUser?.uid !== user.uid) return;
+        updateSignedInView(user, token.claims.role);
+      } catch {
+        updateSignedInView(null, null);
+        showAuthError("Could not confirm your account permissions. Please sign in again.");
+        await signOut(firebaseAuth);
+      }
+    });
+  } catch {
+    showAuthError("Sign-in could not be initialized. Please try again later.");
+    loginForm.hidden = true;
+  }
+}
+
+loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!firebaseAuth || !loginForm.checkValidity()) return;
+  loginBtn.disabled = true;
+  setStatus(authStatus, "Signing in…", "pending");
+  try {
+    await signInWithEmailAndPassword(
+      firebaseAuth,
+      loginEmail.value.trim(),
+      loginPassword.value
+    );
+    loginPassword.value = "";
+  } catch {
+    showAuthError("Sign-in failed. Check your email and password, then try again.");
+  } finally {
+    checkLoginReady();
+  }
+});
+
+resetPasswordBtn.addEventListener("click", async () => {
+  if (!firebaseAuth || !loginEmail.value.trim()) {
+    showAuthError("Enter your account email first.");
+    return;
+  }
+  try {
+    await sendPasswordResetEmail(firebaseAuth, loginEmail.value.trim());
+    setStatus(authStatus, "If an account exists for that email, a reset link has been sent.", "ok");
+  } catch {
+    showAuthError("Password reset could not be started. Check the email and try again.");
+  }
+});
+
+signOutBtn.addEventListener("click", async () => {
+  if (!firebaseAuth) return;
+  try {
+    await signOut(firebaseAuth);
+    stopTimer(pushTimer);
+    stopTimer(verifyTimer);
+    pushIdempotencyKey = null;
+  } catch {
+    showAuthError("Sign-out failed. Please try again.");
+  }
+});
+
+void initializeAuthentication();
 
 function stopTimer(timerRef) {
   if (timerRef.id) clearTimeout(timerRef.id);
@@ -65,6 +288,7 @@ const pushBtn = document.getElementById("pushBtn");
 const pushStatus = document.getElementById("pushStatus");
 
 const pushTimer = { id: null };
+let pushIdempotencyKey = null;
 
 function checkPushReady() {
   pushBtn.disabled = !pushForm.checkValidity();
@@ -72,8 +296,8 @@ function checkPushReady() {
 [phone, amount, route].forEach((el) => el.addEventListener("input", checkPushReady));
 checkPushReady();
 
-function pollPaymentStatus(checkoutId, phoneShown, amountShown, attempt = 0, failCount = 0) {
-  const MAX_ATTEMPTS = 60; // 60 x 3s = 3 minutes — covers slow real-world callbacks
+function pollPaymentStatus(checkoutId, amountShown, attempt = 0, failCount = 0) {
+  const MAX_ATTEMPTS = 36; // 36 x 5s = 3 minutes — covers slow real-world callbacks
   const MAX_CONSECUTIVE_FAILS = 3;
 
   getJSON(`/stk-push/${checkoutId}/status`)
@@ -81,7 +305,7 @@ function pollPaymentStatus(checkoutId, phoneShown, amountShown, attempt = 0, fai
       if (data.status === "success") {
         setStatus(
           pushStatus,
-          `Payment done ✓ — KES ${amountShown.toLocaleString()} from ${phoneShown}.`,
+          `Payment done ✓ — KES ${amountShown.toLocaleString()}.`,
           "ok"
         );
         stopTimer(pushTimer);
@@ -107,8 +331,8 @@ function pollPaymentStatus(checkoutId, phoneShown, amountShown, attempt = 0, fai
       }
       setStatus(pushStatus, "Waiting for payment…", "pending");
       pushTimer.id = setTimeout(
-        () => pollPaymentStatus(checkoutId, phoneShown, amountShown, attempt + 1, 0),
-        3000
+        () => pollPaymentStatus(checkoutId, amountShown, attempt + 1, 0),
+        5000
       );
     })
     .catch(() => {
@@ -124,8 +348,8 @@ function pollPaymentStatus(checkoutId, phoneShown, amountShown, attempt = 0, fai
       }
       // transient network blip — retry without alarming the conductor
       pushTimer.id = setTimeout(
-        () => pollPaymentStatus(checkoutId, phoneShown, amountShown, attempt, failCount + 1),
-        3000
+        () => pollPaymentStatus(checkoutId, amountShown, attempt, failCount + 1),
+        5000
       );
     });
 }
@@ -145,16 +369,18 @@ pushForm.addEventListener("submit", async (e) => {
   const amountValue = Number(amount.value);
 
   try {
+    if (!pushIdempotencyKey) pushIdempotencyKey = crypto.randomUUID();
     const data = await postJSON("/stk-push", {
       phone_number: phoneValue,
       amount: amountValue,
       route: route.value,
-    });
+    }, { "Idempotency-Key": pushIdempotencyKey });
 
+    pushIdempotencyKey = null;
     setStatus(pushStatus, "Prompt sent — waiting for payment…", "pending");
-    pollPaymentStatus(data.checkout_request_id, phoneValue, amountValue);
+    pollPaymentStatus(data.checkout_request_id, amountValue);
   } catch (err) {
-    setStatus(pushStatus, `Couldn't send the prompt — ${err.message}`, "error");
+    setStatus(pushStatus, `Couldn't confirm the prompt request — ${err.message}`, "error");
     checkPushReady();
   }
 });
@@ -189,6 +415,8 @@ function describeVerifyResult(data) {
         text: `That code exists, but the amount doesn't match (expected KES ${data.expected}).`,
         state: "error",
       };
+    case "failed":
+      return { text: "Safaricom could not verify this transaction.", state: "error" };
     default:
       return { text: data && data.detail ? data.detail : "Checked — see result above.", state: "ok" };
   }

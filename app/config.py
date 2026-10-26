@@ -33,9 +33,23 @@ class Settings:
   # --- Your public callback URL (your Railway URL in production, no trailing slash) ---
     CALLBACK_URL: str = _require("DARAJA_CALLBACK_URL")
 
-    # --- Used for TransactionStatusQuery (the /verify endpoint's real path) ---
-    INITIATOR_NAME: str = os.getenv("DARAJA_INITIATOR_NAME", "testapi")
-    INITIATOR_PASSWORD: str = os.getenv("DARAJA_INITIATOR_PASSWORD", "Safaricom999!*!")
+    # --- Persistent transaction storage ---
+    DATABASE_PATH: str = os.getenv(
+        "THIBITIFARE_DATABASE_PATH",
+        "data/thibitifare.sqlite3",
+    )
+    PHONE_ENCRYPTION_KEY: str = _require("THIBITIFARE_PHONE_ENCRYPTION_KEY")
+
+    # --- Firebase Authentication ---
+    FIREBASE_PROJECT_ID: str = os.getenv("FIREBASE_PROJECT_ID", "")
+    FIREBASE_API_KEY: str = os.getenv("FIREBASE_API_KEY", "")
+    FIREBASE_AUTH_DOMAIN: str = os.getenv("FIREBASE_AUTH_DOMAIN", "")
+    FIREBASE_APP_ID: str = os.getenv("FIREBASE_APP_ID", "")
+    FIREBASE_SERVICE_ACCOUNT_JSON: str = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "")
+
+    # --- Required for TransactionStatusQuery (the /verify endpoint's real path) ---
+    INITIATOR_NAME: str = os.getenv("DARAJA_INITIATOR_NAME", "")
+    INITIATOR_PASSWORD: str = os.getenv("DARAJA_INITIATOR_PASSWORD", "")
     CERT_PATH: str = os.getenv("DARAJA_CERT_PATH", "certs/sandbox_public_key.pem")
 
     # --- Demo safety switch: see README "Verify: real vs stub" section ---

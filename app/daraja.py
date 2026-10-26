@@ -1,6 +1,6 @@
 import base64
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -12,7 +12,38 @@ class DarajaError(Exception):
     """Raised whenever Daraja rejects a request, or it can't be reached at all."""
 
 
+class DarajaOutcomeUnknown(DarajaError):
+    """Raised when a payment request may have reached Daraja but timed out."""
+
+
 _token_cache = {"token": None, "expires_at": 0}
+
+
+def _response_json(response: httpx.Response, operation: str) -> dict:
+    try:
+        data = response.json()
+    except ValueError as e:
+        raise DarajaError(
+            f"{operation} returned an invalid response (HTTP {response.status_code})."
+        ) from e
+
+    if not isinstance(data, dict):
+        raise DarajaError(
+            f"{operation} returned an invalid response (HTTP {response.status_code})."
+        )
+
+    if response.status_code != 200:
+        detail = (
+            data.get("errorMessage")
+            or data.get("error_description")
+            or data.get("ResponseDescription")
+        )
+        message = f"{operation} failed (HTTP {response.status_code})"
+        if detail:
+            message += f": {detail}"
+        raise DarajaError(message)
+
+    return data
 
 
 async def get_access_token() -> str:
@@ -31,23 +62,26 @@ async def get_access_token() -> str:
                 headers={"Authorization": f"Basic {encoded}"},
             )
         except httpx.TimeoutException as e:
-            raise DarajaError(f"Timed out connecting to Safaricom: {e}")
+            raise DarajaError("Timed out while requesting a Safaricom access token.") from e
         except httpx.RequestError as e:
-            raise DarajaError(f"Network error contacting Safaricom: {e}")
+            raise DarajaError("Network error while requesting a Safaricom access token.") from e
 
-    if resp.status_code != 200:
-        raise DarajaError(f"Failed to get access token: {resp.status_code} {resp.text}")
-
-    data = resp.json()
-    token = data["access_token"]
+    data = _response_json(resp, "Access token request")
+    token = data.get("access_token")
+    if not isinstance(token, str) or not token:
+        raise DarajaError("Safaricom did not return an access token.")
     # Refresh a little early (Daraja tokens last 3600s)
     _token_cache["token"] = token
-    _token_cache["expires_at"] = now + int(data.get("expires_in", 3599)) - 60
+    try:
+        expires_in = int(data.get("expires_in", 3599))
+    except (TypeError, ValueError):
+        expires_in = 3599
+    _token_cache["expires_at"] = now + max(0, expires_in - 60)
     return token
 
 
 def _password_and_timestamp() -> tuple[str, str]:
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.now(timezone(timedelta(hours=3))).strftime("%Y%m%d%H%M%S")
     raw = f"{settings.SHORTCODE}{settings.PASSKEY}{timestamp}"
     password = base64.b64encode(raw.encode()).decode()
     return password, timestamp
@@ -80,14 +114,15 @@ async def stk_push(phone_number: str, amount: int, account_ref: str, description
                 json=payload,
             )
         except httpx.TimeoutException as e:
-            raise DarajaError(f"Timed out connecting to Safaricom: {e}")
+            raise DarajaOutcomeUnknown(
+                "The payment request outcome is unknown. Check the passenger's phone before trying again."
+            ) from e
         except httpx.RequestError as e:
-            raise DarajaError(f"Network error contacting Safaricom: {e}")
+            raise DarajaOutcomeUnknown(
+                "The payment request outcome is unknown. Check the passenger's phone before trying again."
+            ) from e
 
-    if resp.status_code != 200:
-        raise DarajaError(f"STK push failed: {resp.status_code} {resp.text}")
-
-    return resp.json()
+    return _response_json(resp, "STK push")
 
 
 async def query_stk_status(checkout_request_id: str) -> dict:
@@ -110,14 +145,11 @@ async def query_stk_status(checkout_request_id: str) -> dict:
                 json=payload,
             )
         except httpx.TimeoutException as e:
-            raise DarajaError(f"Timed out connecting to Safaricom: {e}")
+            raise DarajaError("Timed out while checking the payment status.") from e
         except httpx.RequestError as e:
-            raise DarajaError(f"Network error contacting Safaricom: {e}")
+            raise DarajaError("Network error while checking the payment status.") from e
 
-    if resp.status_code != 200:
-        raise DarajaError(f"STK status query failed: {resp.status_code} {resp.text}")
-
-    return resp.json()
+    return _response_json(resp, "STK status query")
 
 
 async def verify_c2b_transaction(transaction_id: str) -> dict:
@@ -132,6 +164,11 @@ async def verify_c2b_transaction(transaction_id: str) -> dict:
     wires that callback into a pending-verification store so the frontend can
     poll /verify/{transaction_id}/status the same way it polls STK push status.
     """
+    if not settings.INITIATOR_NAME or not settings.INITIATOR_PASSWORD:
+        raise DarajaError(
+            "Set DARAJA_INITIATOR_NAME and DARAJA_INITIATOR_PASSWORD to the provider-issued values before real verification."
+        )
+
     token = await get_access_token()
 
     try:
@@ -160,11 +197,8 @@ async def verify_c2b_transaction(transaction_id: str) -> dict:
                 json=payload,
             )
         except httpx.TimeoutException as e:
-            raise DarajaError(f"Timed out connecting to Safaricom: {e}")
+            raise DarajaError("Timed out while requesting transaction verification.") from e
         except httpx.RequestError as e:
-            raise DarajaError(f"Network error contacting Safaricom: {e}")
+            raise DarajaError("Network error while requesting transaction verification.") from e
 
-        if resp.status_code != 200:
-            raise DarajaError(f"Transaction status query failed: {resp.status_code} {resp.text}")
-
-        return resp.json()
+        return _response_json(resp, "Transaction status query")

@@ -2,7 +2,7 @@
 // requirements. Deliberately does NOT cache API responses (payment status
 // must always be fresh), only the static app shell.
 
-const CACHE_NAME = "thibitifare-shell-v1";
+const CACHE_NAME = "thibitifare-shell-v2";
 const SHELL_FILES = ["/", "/index.html", "/style.css", "/script.js", "/Manifest.json"];
 
 self.addEventListener("install", (event) => {

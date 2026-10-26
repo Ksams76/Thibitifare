@@ -79,7 +79,8 @@ label {
   margin: 14px 0 6px;
 }
 
-input {
+input,
+select {
   width: 100%;
   padding: 12px 14px;
   border: 1px solid var(--border);
@@ -87,7 +88,8 @@ input {
   font-size: 16px;
 }
 
-input:focus {
+input:focus,
+select:focus {
   outline: 2px solid var(--green);
   outline-offset: 1px;
 }
@@ -124,6 +126,15 @@ button:hover:not(:disabled) {
   background: var(--green-dark);
 }
 
+button.secondary {
+  background: #e8efeB;
+  color: var(--green-dark);
+}
+
+button.secondary:hover:not(:disabled) {
+  background: #d8e6df;
+}
+
 button:disabled {
   background: #b9c9c1;
   cursor: not-allowed;
@@ -147,6 +158,17 @@ button:disabled {
 
 .status[data-state="pending"] {
   color: var(--muted);
+}
+
+.audit-events {
+  padding-left: 20px;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.audit-events li {
+  margin-top: 8px;
 }
 
 .divider {
@@ -177,8 +199,13 @@ button:disabled {
   .card {
     background: #1a1a1a;
   }
-  input {
+  input,
+  select {
     background: #1a1a1a;
     color: var(--ink);
+  }
+  button.secondary {
+    background: #2a3b34;
+    color: #d7eee2;
   }
 }
