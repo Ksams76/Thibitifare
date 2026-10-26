@@ -264,9 +264,31 @@ because the registry could not be resolved during that check.
   SQLite volume. This work does not replace provider callback security,
   deployment verification, or an operational backup/retention plan.
 
+### Live deployment check — 2026-10-26
+
+- Commit `c3cd542` is present on `origin/main`; the local working tree was clean
+  after publishing.
+- The public Railway health endpoint returned HTTP 200 and reported
+  `verify_mode: stub`.
+- The public Netlify page served the Phase 3 sign-in screen, but the sign-in
+  configuration remained in its loading state and then displayed an
+  initialization failure.
+- `GET /auth/config` on the public Railway backend returned HTTP 404. The
+  deployed backend therefore does not yet expose the Phase 3 API, so
+  authentication, role authorization, and audit features are **not verified
+  operationally in the live deployment**.
+- This does not invalidate the local verification above. The live rollout
+  remains blocked until Railway deploys the pushed commit and its Firebase
+  environment variables/service credential are configured privately. Do not
+  mark Phase 3 complete for production until the config endpoint, sign-in,
+  role enforcement, role updates, and audit view have been verified live.
+
 ## Next verification
 
-Configure the Firebase project and server credential in the deployment
-environment, bootstrap the first administrator, and test the sign-in/role flow
-against that Firebase project. Continue to keep Daraja callback authentication
-and sandbox verification as explicit deployment prerequisites.
+Deploy commit `c3cd542` to Railway and configure the Firebase project settings
+and server credential in Railway's private environment. Confirm that
+`GET /auth/config` returns HTTP 200 with `enabled: true` (without exposing any
+server credential), bootstrap the first administrator, and verify sign-in,
+role enforcement, role assignment/removal, and audit visibility against the
+real Firebase project. Continue to keep Daraja callback authentication and
+sandbox verification as explicit deployment prerequisites.
