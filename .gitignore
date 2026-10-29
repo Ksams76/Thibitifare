@@ -13,3 +13,6 @@ certs/*.pem
 *service-account*.json
 *firebase-adminsdk*.json
 !certs/README.txt
+# Private Firebase Admin credentials
+private/
+*service-account*.json

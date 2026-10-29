@@ -1,5 +1,5 @@
 import os
-
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -30,7 +30,7 @@ class Settings:
     # --- Environment: "sandbox" or "production" ---
     ENV: str = os.getenv("DARAJA_ENV", "sandbox")
 
-  # --- Your public callback URL (your Railway URL in production, no trailing slash) ---
+  # --- Your public callback URL (your backend's public URL, no trailing slash) ---
     CALLBACK_URL: str = _require("DARAJA_CALLBACK_URL")
 
     # --- Persistent transaction storage ---
@@ -60,6 +60,24 @@ class Settings:
     # again. Set DARAJA_VERIFY_STUB=false once transaction-status-result is
     # wired up for production use.
     VERIFY_STUB_MODE: bool = os.getenv("DARAJA_VERIFY_STUB", "true").lower() == "true"
+
+    # --- Provider callback authentication ---
+    # A dedicated secret (>= 32 URL-safe characters) appended to the callback URLs
+    # given to Daraja as ?token=...; callbacks without it are rejected. Safaricom
+    # supports no custom headers or signatures on these callbacks, so this shared
+    # secret in the URL is the only mechanism available here. Empty means
+    # UNPROTECTED and is for local development only; production refuses to start
+    # without it.
+    CALLBACK_AUTH_TOKEN: str = os.getenv("DARAJA_CALLBACK_TOKEN", "")
+
+    def __init__(self) -> None:
+        token = self.CALLBACK_AUTH_TOKEN
+        if token and not re.fullmatch(r"[A-Za-z0-9_-]{32,}", token):
+            raise RuntimeError(
+                "DARAJA_CALLBACK_TOKEN must be at least 32 characters of letters, digits, '-' or '_'."
+            )
+        if self.ENV == "production" and not token:
+            raise RuntimeError("DARAJA_CALLBACK_TOKEN is required when DARAJA_ENV=production.")
 
     @property
     def base_url(self) -> str:

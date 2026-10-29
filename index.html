@@ -15,6 +15,8 @@
       <p class="sub">Confirm the fare</p>
     </header>
 
+    <p id="envBanner" class="status" role="status" data-state="error">Checking payment environment… do not initiate payment until it is confirmed.</p>
+
     <section class="card" aria-labelledby="accountHeading">
       <h2 id="accountHeading">Conductor sign in</h2>
       <p class="muted">Sign in with the account provided by your ThibitiFare administrator.</p>
@@ -51,6 +53,33 @@
       </form>
       <button id="loadAuditBtn" class="secondary" type="button">Load recent activity</button>
       <ol id="auditEvents" class="audit-events" aria-live="polite"></ol>
+
+      <h3 id="unknownHeading">Unresolved payment attempts</h3>
+      <p class="muted">
+        Attempts whose outcome could not be confirmed. Recording a review keeps the
+        attempt unresolved: it does not confirm a payment, cancel it, or allow a new prompt.
+      </p>
+      <button id="loadUnknownBtn" class="secondary" type="button">Load unresolved attempts</button>
+      <ol id="unknownAttempts" class="audit-events" aria-live="polite"></ol>
+      <form id="reviewForm" hidden aria-labelledby="unknownHeading">
+        <p id="reviewTarget" class="muted"></p>
+        <label for="reviewEvidenceType">Evidence source</label>
+        <select id="reviewEvidenceType" name="evidence_type" required>
+          <option value="daraja_portal">Daraja portal</option>
+          <option value="mpesa_statement">M-Pesa statement</option>
+          <option value="passenger_report">Passenger report</option>
+          <option value="other">Other</option>
+        </select>
+        <label for="reviewEvidenceRef">Evidence reference</label>
+        <input id="reviewEvidenceRef" name="evidence_reference" type="text" minlength="3"
+               maxlength="64" pattern="[A-Za-z0-9_.:\-]{3,64}" required
+               autocomplete="off" />
+        <label for="reviewReason">Reason (no phone numbers)</label>
+        <textarea id="reviewReason" name="reason" minlength="10" maxlength="300" rows="3" required></textarea>
+        <button id="reviewBtn" type="submit" disabled>Record review</button>
+        <button id="reviewCancelBtn" class="secondary" type="button">Cancel</button>
+        <p id="reviewStatus" class="status" role="status"></p>
+      </form>
     </section>
 
     <!-- Flow 1: conductor sends the commuter an STK push prompt -->
@@ -94,7 +123,7 @@
     <section class="card">
       <h2>Verify a payment</h2>
       <p class="muted">
-        Check a transaction code against Safaricom's record before you wave them through.
+        Check a transaction code before you wave them through. The banner above shows how it is checked.
       </p>
 
       <form id="verifyForm" novalidate>
@@ -118,7 +147,7 @@
     </div>
 
     <footer class="foot">
-      <p>ThibitiFare &mdash; matatu fare verification against Safaricom's own record.</p>
+      <p>ThibitiFare &mdash; matatu fare verification.</p>
     </footer>
   </main>
 

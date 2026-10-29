@@ -39,7 +39,8 @@ Updated: 2026-10-26
   route is free text and must be re-entered for each request.
 - CORS restricts browser origins, but it does not authenticate callers. Daraja
   application credentials are loaded from environment variables; callback
-  routes have no application-level authentication.
+  routes had no application-level authentication at this baseline (a shared
+  `DARAJA_CALLBACK_TOKEN` check was added later; see README "Callback authentication").
 
 ### Baseline risks and gaps
 

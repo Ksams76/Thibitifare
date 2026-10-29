@@ -26,8 +26,12 @@ class StorageConflict(StorageError):
     """Raised when a persistent transaction or receipt conflicts with existing data."""
 
 
+class StorageForbidden(StorageError):
+    """Raised when an actor is not permitted to change a record."""
+
+
 class TransactionStore:
-    _SCHEMA_VERSION = 3
+    _SCHEMA_VERSION = 5
     _PHONE_AAD = b"thibitifare:passenger-phone:v1"
     _STALE_SUBMISSION_SECONDS = 60
 
@@ -159,6 +163,75 @@ class TransactionStore:
                     ON audit_events(actor_uid, created_at)
                     """,
                 ),
+                4: (
+                    # Existing reservations keep a NULL owner and are never
+                    # recoverable through the owner-scoped lookup.
+                    """
+                    ALTER TABLE idempotency_keys ADD COLUMN owner_uid TEXT
+                    """,
+                ),
+                5: (
+                    # Existing verification records keep a NULL owner and are
+                    # never readable through the owner-scoped status lookup.
+                    """
+                    ALTER TABLE transactions ADD COLUMN owner_uid TEXT
+                    """,
+                    # SQLite cannot alter a CHECK constraint, so rebuild the
+                    # audit table to allow the administrator review actions.
+                    "DROP INDEX audit_events_actor_created_idx",
+                    "ALTER TABLE audit_events RENAME TO audit_events_v4",
+                    """
+                    CREATE TABLE audit_events (
+                        event_id TEXT PRIMARY KEY,
+                        actor_uid TEXT NOT NULL,
+                        actor_role TEXT,
+                        http_method TEXT NOT NULL,
+                        action TEXT NOT NULL CHECK (
+                            action IN (
+                                'stk.create', 'stk.status', 'payment.verify',
+                                'verification.status', 'daraja.stk_callback',
+                                'daraja.verification_callback', 'daraja.timeout_callback',
+                                'audit.read', 'identity.role.assign',
+                                'stk.attempt.list', 'stk.attempt.review'
+                            )
+                        ),
+                        subject_uid TEXT,
+                        response_status INTEGER NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """,
+                    """
+                    INSERT INTO audit_events (
+                        event_id, actor_uid, actor_role, http_method, action,
+                        subject_uid, response_status, created_at
+                    )
+                    SELECT event_id, actor_uid, actor_role, http_method, action,
+                           subject_uid, response_status, created_at
+                    FROM audit_events_v4
+                    """,
+                    "DROP TABLE audit_events_v4",
+                    """
+                    CREATE INDEX audit_events_actor_created_idx
+                    ON audit_events(actor_uid, created_at)
+                    """,
+                    # Review-only records: they never change an attempt's state.
+                    """
+                    CREATE TABLE stk_attempt_reviews (
+                        review_id TEXT PRIMARY KEY,
+                        idempotency_key TEXT NOT NULL
+                            REFERENCES idempotency_keys(idempotency_key),
+                        admin_uid TEXT NOT NULL,
+                        previous_state TEXT NOT NULL,
+                        new_state TEXT NOT NULL,
+                        outcome TEXT NOT NULL CHECK (outcome IN ('no_change_review')),
+                        evidence_type TEXT NOT NULL,
+                        evidence_reference TEXT NOT NULL,
+                        reason TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        UNIQUE (idempotency_key, evidence_reference)
+                    )
+                    """,
+                ),
             }
 
             while True:
@@ -257,6 +330,7 @@ class TransactionStore:
         phone_number: str,
         amount: int,
         route: str,
+        owner_uid: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         fingerprint_payload = json.dumps(
             [phone_number, amount, route],
@@ -276,7 +350,11 @@ class TransactionStore:
             ).fetchone()
             if row is not None:
                 record = dict(row)
-                if not hmac.compare_digest(record["fingerprint"], fingerprint):
+                # A key owned by another account (or recorded without an owner)
+                # is reported exactly like a key reused with different details.
+                if record.get("owner_uid") != owner_uid or not hmac.compare_digest(
+                    record["fingerprint"], fingerprint
+                ):
                     raise StorageConflict(
                         "This request key was already used with different payment details."
                     )
@@ -305,18 +383,62 @@ class TransactionStore:
             connection.execute(
                 """
                 INSERT INTO idempotency_keys (
-                    idempotency_key, fingerprint, state, updated_at, updated_at_epoch
-                ) VALUES (?, ?, 'submitting', ?, ?)
+                    idempotency_key, fingerprint, state, updated_at, updated_at_epoch,
+                    owner_uid
+                ) VALUES (?, ?, 'submitting', ?, ?, ?)
                 """,
-                (idempotency_key, fingerprint, self._now(), now),
+                (idempotency_key, fingerprint, self._now(), now, owner_uid),
             )
             return {
                 "idempotency_key": idempotency_key,
                 "fingerprint": fingerprint,
+                "owner_uid": owner_uid,
                 "state": "submitting",
                 "checkout_request_id": None,
                 "reason": None,
             }, True
+
+    def get_stk_attempt(
+        self,
+        idempotency_key: str,
+        owner_uid: str,
+    ) -> dict[str, Any] | None:
+        """Read-only recovery lookup; unknown, unowned and foreign keys all return None."""
+        if not owner_uid:
+            return None
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM idempotency_keys WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if row is None or row["owner_uid"] != owner_uid:
+                return None
+            attempt = {
+                "state": row["state"],
+                "checkout_request_id": row["checkout_request_id"],
+                "status": None,
+                "reason": row["reason"],
+            }
+            if (
+                attempt["state"] == "submitting"
+                and time.time() - row["updated_at_epoch"] > self._STALE_SUBMISSION_SECONDS
+            ):
+                attempt["state"] = "unknown"
+                attempt["reason"] = (
+                    "The payment request outcome is unknown. Check the passenger's phone before trying again."
+                )
+            if attempt["state"] == "accepted":
+                transaction = connection.execute(
+                    """
+                    SELECT status, reason FROM transactions
+                    WHERE flow = 'stk' AND idempotency_key = ?
+                    """,
+                    (idempotency_key,),
+                ).fetchone()
+                if transaction is not None:
+                    attempt["status"] = transaction["status"]
+                    attempt["reason"] = transaction["reason"]
+            return attempt
 
     def release_stk_submission(self, idempotency_key: str) -> None:
         with self._transaction() as connection:
@@ -339,6 +461,94 @@ class TransactionStore:
                 """,
                 (reason, self._now(), now, idempotency_key),
             )
+
+    def list_unknown_stk_attempts(self, limit: int, offset: int) -> list[dict[str, Any]]:
+        """Administrator view of attempts whose provider outcome is unknown."""
+        cutoff = time.time() - self._STALE_SUBMISSION_SECONDS
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT k.idempotency_key, k.owner_uid, k.reason, k.updated_at,
+                       (SELECT COUNT(*) FROM stk_attempt_reviews r
+                        WHERE r.idempotency_key = k.idempotency_key) AS review_count
+                FROM idempotency_keys k
+                WHERE k.state = 'unknown'
+                   OR (k.state = 'submitting' AND k.updated_at_epoch < ?)
+                ORDER BY k.updated_at_epoch, k.idempotency_key
+                LIMIT ? OFFSET ?
+                """,
+                (cutoff, limit, offset),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def review_unknown_stk_attempt(
+        self,
+        idempotency_key: str,
+        admin_uid: str,
+        evidence_type: str,
+        evidence_reference: str,
+        reason: str,
+    ) -> dict[str, Any] | None:
+        """
+        Records an administrator's evidence review of an unknown attempt.
+
+        This never changes the attempt's state: a payment cannot be confirmed
+        without a provider checkout ID, and none is stored for an unknown
+        attempt. Returns None when the attempt does not exist.
+        """
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM idempotency_keys WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["owner_uid"] is not None and row["owner_uid"] == admin_uid:
+                raise StorageForbidden("Administrators cannot review their own payment attempts.")
+
+            state = row["state"]
+            if (
+                state == "submitting"
+                and time.time() - row["updated_at_epoch"] > self._STALE_SUBMISSION_SECONDS
+            ):
+                state = "unknown"
+            if state != "unknown":
+                raise StorageConflict("Only attempts with an unknown outcome can be reviewed.")
+
+            review_id = str(uuid4())
+            created_at = self._now()
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO stk_attempt_reviews (
+                        review_id, idempotency_key, admin_uid, previous_state,
+                        new_state, outcome, evidence_type, evidence_reference,
+                        reason, created_at
+                    ) VALUES (?, ?, ?, 'unknown', 'unknown', 'no_change_review', ?, ?, ?, ?)
+                    """,
+                    (
+                        review_id,
+                        idempotency_key,
+                        admin_uid,
+                        evidence_type,
+                        evidence_reference,
+                        reason,
+                        created_at,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise StorageConflict(
+                    "This evidence has already been recorded for the attempt."
+                ) from error
+            return {
+                "review_id": review_id,
+                "idempotency_key": idempotency_key,
+                "previous_state": "unknown",
+                "new_state": "unknown",
+                "outcome": "no_change_review",
+                "owner_uid": row["owner_uid"],
+                "created_at": created_at,
+            }
 
     def create_stk_transaction(
         self,
@@ -412,6 +622,21 @@ class TransactionStore:
                 (checkout_request_id,),
             ).fetchone()
             return self._transaction_record(row) if row is not None else None
+
+    def stk_checkout_owned_by(self, checkout_request_id: str, owner_uid: str) -> bool:
+        """True only if the checkout's attempt was recorded with this exact owner."""
+        if not owner_uid:
+            return False
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT k.owner_uid FROM transactions t
+                JOIN idempotency_keys k ON k.idempotency_key = t.idempotency_key
+                WHERE t.flow = 'stk' AND t.provider_reference = ?
+                """,
+                (checkout_request_id,),
+            ).fetchone()
+            return row is not None and row["owner_uid"] == owner_uid
 
     def claim_stk_status_query(self, checkout_request_id: str, interval: float) -> bool:
         now = time.time()
@@ -553,6 +778,7 @@ class TransactionStore:
         self,
         transaction_code: str,
         expected_amount: int,
+        owner_uid: str | None = None,
     ) -> tuple[dict[str, Any] | None, bool, bool]:
         normalized_code = transaction_code.strip().upper()
         with self._transaction() as connection:
@@ -571,6 +797,12 @@ class TransactionStore:
                 (normalized_code,),
             ).fetchone()
             if row is not None:
+                # An authenticated caller may only see a record it created; a
+                # foreign or ownerless record is not disclosed.
+                if owner_uid is not None and row["owner_uid"] != owner_uid:
+                    raise StorageConflict(
+                        "A verification for this code is already in progress."
+                    )
                 record = self._verification_status(row)
                 if record["amount"] != expected_amount:
                     raise StorageConflict(
@@ -585,16 +817,33 @@ class TransactionStore:
                 """
                 INSERT INTO transactions (
                     transaction_id, flow, provider_reference, amount, status,
-                    created_at, updated_at, updated_at_epoch
-                ) VALUES (?, 'verification', ?, ?, 'pending', ?, ?, ?)
+                    created_at, updated_at, updated_at_epoch, owner_uid
+                ) VALUES (?, 'verification', ?, ?, 'pending', ?, ?, ?, ?)
                 """,
-                (transaction_id, normalized_code, expected_amount, timestamp, timestamp, now),
+                (transaction_id, normalized_code, expected_amount, timestamp, timestamp, now, owner_uid),
             )
             row = connection.execute(
                 "SELECT * FROM transactions WHERE transaction_id = ?",
                 (transaction_id,),
             ).fetchone()
             return self._verification_status(row), True, False
+
+    def get_verification_for_owner(
+        self, transaction_code: str, owner_uid: str
+    ) -> dict[str, Any] | None:
+        """Owner-scoped read; missing, foreign and ownerless records all return None."""
+        if not owner_uid:
+            return None
+        normalized_code = transaction_code.strip().upper()
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM transactions
+                WHERE flow = 'verification' AND provider_reference = ? AND owner_uid = ?
+                """,
+                (normalized_code, owner_uid),
+            ).fetchone()
+            return self._verification_status(row) if row is not None else None
 
     def get_verification(self, transaction_code: str) -> dict[str, Any] | None:
         normalized_code = transaction_code.strip().upper()

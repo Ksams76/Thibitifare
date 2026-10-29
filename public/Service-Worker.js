@@ -2,8 +2,8 @@
 // requirements. Deliberately does NOT cache API responses (payment status
 // must always be fresh), only the static app shell.
 
-const CACHE_NAME = "thibitifare-shell-v2";
-const SHELL_FILES = ["/", "/index.html", "/style.css", "/script.js", "/Manifest.json"];
+const CACHE_NAME = "thibitifare-shell-v3";
+const SHELL_FILES = ["/Manifest.json"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -22,11 +22,15 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
+  if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
 
-  // Never intercept API calls — always go to the network for those.
+  // Never intercept API calls - always go to the network for those.
   if (url.origin !== self.location.origin) return;
 
+  // Pages and hashed assets always come from the network, so a new deploy
+  // never serves a stale index.html. Only the manifest is cache-backed.
+  if (url.pathname !== "/Manifest.json") return;
   event.respondWith(
     caches.match(event.request).then((cached) => cached || fetch(event.request))
   );

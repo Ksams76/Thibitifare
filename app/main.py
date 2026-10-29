@@ -1,5 +1,7 @@
+import hmac
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from typing import Annotated, AsyncGenerator, Literal
 
@@ -18,7 +20,7 @@ from .auth import (
     set_firebase_user_role,
 )
 from .config import settings
-from .storage import StorageConflict, StorageError, TransactionStore
+from .storage import StorageConflict, StorageError, StorageForbidden, TransactionStore
 
 store = TransactionStore(settings.DATABASE_PATH, settings.PHONE_ENCRYPTION_KEY)
 STK_STATUS_QUERY_MIN_INTERVAL = 5.0
@@ -32,6 +34,39 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(title="ThibitiFare API", lifespan=lifespan)
+
+
+async def require_callback_token(request: Request) -> None:
+    """
+    Rejects provider callbacks that lack the configured secret. When no secret is
+    configured the callbacks are unauthenticated (development only).
+    """
+    expected = settings.CALLBACK_AUTH_TOKEN
+    if not expected:
+        return
+    supplied = request.query_params.get("token", "")
+    if not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Forbidden.")
+
+
+class _RedactCallbackToken(logging.Filter):
+    """Keeps the callback secret out of access logs, which include query strings."""
+
+    _PATTERN = re.compile(r"([?&]token=)[^&\s\"']*")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                self._PATTERN.sub(r"\1[redacted]", a) if isinstance(a, str) else a
+                for a in record.args
+            )
+        if isinstance(record.msg, str):
+            record.msg = self._PATTERN.sub(r"\1[redacted]", record.msg)
+        return True
+
+
+for _name in ("uvicorn.access", "uvicorn.error", "httpx", "httpcore"):
+    logging.getLogger(_name).addFilter(_RedactCallbackToken())
 
 
 def _audit_action(method: str, path: str) -> str | None:
@@ -51,6 +86,14 @@ def _audit_action(method: str, path: str) -> str | None:
         return "daraja.timeout_callback"
     if method == "GET" and path == "/admin/audit-events":
         return "audit.read"
+    if method == "GET" and path == "/admin/stk-attempts/unknown":
+        return "stk.attempt.list"
+    if (
+        method == "POST"
+        and path.startswith("/admin/stk-attempts/")
+        and path.endswith("/review")
+    ):
+        return "stk.attempt.review"
     if method == "POST" and path.startswith("/admin/users/") and path.endswith("/role"):
         return "identity.role.assign"
     return None
@@ -88,15 +131,18 @@ async def audit_authenticated_requests(request: Request, call_next):
 # Set FRONTEND_ORIGINS in .env to a comma-separated list once you have a real
 # deployed frontend URL (e.g. your Netlify domain). localhost:5173 (Vite's
 # default dev port) is always allowed so `npm run dev` works out of the box.
-_extra_origins = [
-    origin.strip()
-    for origin in os.getenv("FRONTEND_ORIGINS", "").split(",")
-    if origin.strip()
-]
+_LOCAL_DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
+def _parse_frontend_origins(raw: str) -> list[str]:
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+_extra_origins = _parse_frontend_origins(os.getenv("FRONTEND_ORIGINS", ""))
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", *_extra_origins],
+    allow_origins=[*_LOCAL_DEV_ORIGINS, *_extra_origins],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -135,6 +181,34 @@ class FirebaseRoleUpdateRequest(BaseModel):
     role: Literal["admin", "conductor", "none"]
 
 
+class AttemptReviewRequest(BaseModel):
+    """Evidence review for an unknown attempt. It records a review; it never settles one."""
+
+    model_config = {"extra": "forbid"}
+
+    outcome: Literal["no_change_review"]
+    evidence_type: Literal["daraja_portal", "mpesa_statement", "passenger_report", "other"]
+    evidence_reference: str = Field(..., pattern=r"^[A-Za-z0-9_.:-]{3,64}$")
+    reason: str = Field(..., min_length=10, max_length=300)
+
+    @field_validator("evidence_reference")
+    @classmethod
+    def reject_phone_numbers(cls, value: str) -> str:
+        if re.fullmatch(r"\+?254\d{9}|0[17]\d{8}", value):
+            raise ValueError("Evidence reference must not be a phone number.")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def keep_passenger_data_out(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 10:
+            raise ValueError("Reason is too short.")
+        if re.search(r"\d{9,}", value.replace(" ", "")):
+            raise ValueError("Reason must not contain phone numbers or long identifiers.")
+        return value
+
+
 def _to_daraja_phone(local_number: str) -> str:
     """Converts the conductor-friendly '0712345678' into Daraja's required '254712345678'."""
     return "254" + local_number[1:]
@@ -142,6 +216,13 @@ def _to_daraja_phone(local_number: str) -> str:
 
 def _is_success_code(value: object) -> bool:
     return (type(value) is int and value == 0) or value == "0"
+
+
+def _is_definite_result_code(value: object) -> bool:
+    """A well-formed numeric provider result code (int or digit string, not bool)."""
+    if type(value) is int:
+        return True
+    return isinstance(value, str) and value.isascii() and value.isdigit()
 
 
 def _callback_phone_matches(phone: object, expected_local_phone: str) -> bool:
@@ -189,6 +270,7 @@ async def trigger_stk_push(
             req.phone_number,
             req.amount,
             req.route,
+            _user.uid,
         )
     except StorageConflict as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
@@ -261,13 +343,44 @@ async def trigger_stk_push(
     return {"checkout_request_id": checkout_id, "status": "pending"}
 
 
+@app.get("/stk-push/attempts/{idempotency_key}")
+async def recover_stk_attempt(
+    idempotency_key: str = Path(pattern=r"^[0-9a-fA-F-]{36}$"),
+    _user: AuthenticatedUser = Depends(require_conductor),
+):
+    """
+    Lets the conductor who created a payment attempt reconnect to it after a
+    reload or sign-in. Unknown keys and keys owned by anyone else are
+    indistinguishable (404), so another account's attempts are never revealed.
+    A 404 is not proof that no prompt was sent; it only means nothing is
+    recoverable for this account.
+    """
+    attempt = await run_in_threadpool(store.get_stk_attempt, idempotency_key, _user.uid)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="No recoverable payment attempt was found.")
+    response: dict[str, str] = {"state": attempt["state"]}
+    if attempt["checkout_request_id"]:
+        response["checkout_request_id"] = attempt["checkout_request_id"]
+    if attempt["status"]:
+        response["status"] = attempt["status"]
+    if attempt["reason"]:
+        response["reason"] = attempt["reason"]
+    return response
+
+
 @app.get("/stk-push/{checkout_request_id}/status")
 async def get_stk_push_status(
     checkout_request_id: str,
     _user: AuthenticatedUser = Depends(require_conductor),
 ):
+    # Ownership is checked before any storage read of the result or Daraja call.
+    # Missing, foreign-owned and legacy ownerless checkouts are indistinguishable.
+    if not await run_in_threadpool(
+        store.stk_checkout_owned_by, checkout_request_id, _user.uid
+    ):
+        raise HTTPException(status_code=404, detail="Unknown checkout_request_id")
     local = await run_in_threadpool(store.get_stk_transaction, checkout_request_id)
-    if not local:
+    if local is None:
         raise HTTPException(status_code=404, detail="Unknown checkout_request_id")
 
     # If the callback already updated us, trust that — it's faster and free.
@@ -295,7 +408,6 @@ async def get_stk_push_status(
         raise HTTPException(status_code=502, detail="Safaricom returned status for a different payment request.")
 
     result_code = result.get("ResultCode")
-    result_desc = result.get("ResultDesc", "") or ""
 
     if _is_success_code(result_code):
         await run_in_threadpool(
@@ -303,16 +415,10 @@ async def get_stk_push_status(
             checkout_request_id,
             "success",
         )
-    elif result_code is not None:
-        if "process" in result_desc.lower() or "pending" in result_desc.lower():
-            pass
-        else:
-            await run_in_threadpool(
-                store.update_stk_status_from_query,
-                checkout_request_id,
-                "failed",
-                "Payment was not completed.",
-            )
+    # A non-success or malformed query result is never finalized as a failure: the
+    # query can report an in-progress payment (its exact shape is unverified) and
+    # a valid callback may still arrive. Only the callback can mark a payment
+    # failed, so an unconfirmed payment stays pending and unresolved.
 
     local = await run_in_threadpool(store.get_stk_transaction, checkout_request_id)
     if local is None:
@@ -320,7 +426,7 @@ async def get_stk_push_status(
     return _public_stk_status(local)
 
 
-@app.post("/daraja/callback")
+@app.post("/daraja/callback", dependencies=[Depends(require_callback_token)])
 async def daraja_callback(request: Request):
     """Daraja POSTs the outcome here once the commuter enters their PIN (or cancels)."""
     try:
@@ -345,6 +451,10 @@ async def daraja_callback(request: Request):
         else None
     )
     if not local:
+        return _acknowledge_callback()
+
+    # A callback without a well-formed result code proves nothing either way.
+    if not _is_definite_result_code(result_code):
         return _acknowledge_callback()
 
     metadata = stk_callback.get("CallbackMetadata", {})
@@ -398,6 +508,7 @@ async def verify_transaction(
             store.begin_verification,
             code,
             req.amount,
+            _user.uid,
         )
     except StorageConflict as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
@@ -446,7 +557,8 @@ async def get_verify_status(
 ):
     """Poll this once /verify returns {"result": "pending"} in real (non-stub) mode."""
     code = transaction_id.strip().upper()
-    pending = await run_in_threadpool(store.get_verification, code)
+    # Missing, foreign-owned and legacy ownerless records are indistinguishable.
+    pending = await run_in_threadpool(store.get_verification_for_owner, code, _user.uid)
     if not pending:
         raise HTTPException(status_code=404, detail="Unknown or already-resolved transaction_id")
     return pending
@@ -464,7 +576,7 @@ async def _verify_against_known_receipts(code: str, amount: int) -> dict:
     return {"result": result}
 
 
-@app.post("/daraja/transaction-status-result")
+@app.post("/daraja/transaction-status-result", dependencies=[Depends(require_callback_token)])
 async def transaction_status_result(request: Request):
     """
     Daraja posts the real TransactionStatusQuery result here, asynchronously,
@@ -543,7 +655,7 @@ async def transaction_status_result(request: Request):
     return _acknowledge_callback()
 
 
-@app.post("/daraja/timeout")
+@app.post("/daraja/timeout", dependencies=[Depends(require_callback_token)])
 async def daraja_timeout(request: Request):
     """Daraja posts here if a TransactionStatusQuery times out in its own queue."""
     try:
@@ -565,7 +677,13 @@ async def daraja_timeout(request: Request):
 
 @app.get("/")
 async def health_check():
-    return {"status": "ok", "service": "ThibitiFare API", "verify_mode": "stub" if settings.VERIFY_STUB_MODE else "live"}
+    return {
+        "status": "ok",
+        "service": "ThibitiFare API",
+        "daraja_env": "production" if settings.ENV == "production" else "sandbox",
+        "verify_mode": "stub" if settings.VERIFY_STUB_MODE else "live",
+        "callback_auth": "enabled" if settings.CALLBACK_AUTH_TOKEN else "disabled",
+    }
 
 
 async def require_admin(
@@ -604,6 +722,67 @@ async def list_audit_events(
             detail="Audit events are temporarily unavailable.",
         ) from error
     return {"events": events, "limit": limit, "offset": offset}
+
+
+@app.get("/admin/stk-attempts/unknown")
+async def list_unknown_stk_attempts(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    _user: AuthenticatedUser = Depends(require_admin),
+):
+    try:
+        attempts = await run_in_threadpool(store.list_unknown_stk_attempts, limit, offset)
+    except StorageError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Payment attempts are temporarily unavailable.",
+        ) from error
+    return {"attempts": attempts, "limit": limit, "offset": offset}
+
+
+@app.post("/admin/stk-attempts/{idempotency_key}/review")
+async def review_unknown_stk_attempt(
+    req: AttemptReviewRequest,
+    request: Request,
+    idempotency_key: str = Path(pattern=r"^[0-9a-fA-F-]{36}$"),
+    _user: AuthenticatedUser = Depends(require_admin),
+):
+    """
+    Records an administrator's evidence review for an attempt stuck in `unknown`.
+    It is review-only: the attempt stays `unknown` (so no new prompt can be sent
+    under it) because an unknown attempt has no provider checkout ID to validate a
+    receipt, amount or phone against. Settlement still requires a provider callback.
+    """
+    try:
+        review = await run_in_threadpool(
+            store.review_unknown_stk_attempt,
+            idempotency_key,
+            _user.uid,
+            req.evidence_type,
+            req.evidence_reference,
+            req.reason,
+        )
+    except StorageForbidden as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except StorageConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except StorageError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="The review could not be recorded.",
+        ) from error
+    if review is None:
+        raise HTTPException(status_code=404, detail="Payment attempt was not found.")
+    if review["owner_uid"]:
+        request.state.audit_subject_uid = review["owner_uid"]
+    return {
+        "review_id": review["review_id"],
+        "idempotency_key": review["idempotency_key"],
+        "previous_state": review["previous_state"],
+        "new_state": review["new_state"],
+        "outcome": review["outcome"],
+        "created_at": review["created_at"],
+    }
 
 
 @app.post("/admin/users/{uid}/role")

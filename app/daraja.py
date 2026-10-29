@@ -19,6 +19,14 @@ class DarajaOutcomeUnknown(DarajaError):
 _token_cache = {"token": None, "expires_at": 0}
 
 
+def callback_url(path: str) -> str:
+    """Builds a callback URL, adding the callback secret when protection is on."""
+    url = f"{settings.CALLBACK_URL}{path}"
+    if settings.CALLBACK_AUTH_TOKEN:
+        url += f"?token={settings.CALLBACK_AUTH_TOKEN}"
+    return url
+
+
 def _response_json(response: httpx.Response, operation: str) -> dict:
     try:
         data = response.json()
@@ -101,7 +109,7 @@ async def stk_push(phone_number: str, amount: int, account_ref: str, description
         "PartyA": phone_number,
         "PartyB": settings.SHORTCODE,
         "PhoneNumber": phone_number,
-        "CallBackURL": f"{settings.CALLBACK_URL}/daraja/callback",
+        "CallBackURL": callback_url("/daraja/callback"),
         "AccountReference": (account_ref or "ThibitiFare")[:12],
         "TransactionDesc": (description or "Fare payment")[:13],
     }
@@ -122,7 +130,14 @@ async def stk_push(phone_number: str, amount: int, account_ref: str, description
                 "The payment request outcome is unknown. Check the passenger's phone before trying again."
             ) from e
 
-    return _response_json(resp, "STK push")
+    # The POST completed, so Safaricom may have processed it. A non-200 status or
+    # an unreadable body cannot prove the prompt was not sent.
+    try:
+        return _response_json(resp, "STK push")
+    except DarajaError as e:
+        raise DarajaOutcomeUnknown(
+            "The payment request outcome is unknown. Check the passenger's phone before trying again."
+        ) from e
 
 
 async def query_stk_status(checkout_request_id: str) -> dict:
@@ -183,8 +198,8 @@ async def verify_c2b_transaction(transaction_id: str) -> dict:
         "TransactionID": transaction_id,
         "PartyA": settings.SHORTCODE,
         "IdentifierType": "4",
-        "ResultURL": f"{settings.CALLBACK_URL}/daraja/transaction-status-result",
-        "QueueTimeOutURL": f"{settings.CALLBACK_URL}/daraja/timeout",
+        "ResultURL": callback_url("/daraja/transaction-status-result"),
+        "QueueTimeOutURL": callback_url("/daraja/timeout"),
         "Remarks": "ThibitiFare verification",
         "Occasion": "Fare check",
     }
