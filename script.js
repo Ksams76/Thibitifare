@@ -1,5 +1,6 @@
 import { initializeApp } from "@firebase/app";
 import {
+  createUserWithEmailAndPassword,
   getAuth,
   onAuthStateChanged,
   sendPasswordResetEmail,
@@ -139,6 +140,14 @@ const loginForm = document.getElementById("loginForm");
 const loginEmail = document.getElementById("loginEmail");
 const loginPassword = document.getElementById("loginPassword");
 const loginBtn = document.getElementById("loginBtn");
+const signedOutControls = document.getElementById("signedOutControls");
+const signupForm = document.getElementById("signupForm");
+const signupEmail = document.getElementById("signupEmail");
+const signupPassword = document.getElementById("signupPassword");
+const signupConfirm = document.getElementById("signupConfirm");
+const signupBtn = document.getElementById("signupBtn");
+const showSignupBtn = document.getElementById("showSignupBtn");
+const showLoginBtn = document.getElementById("showLoginBtn");
 const resetPasswordBtn = document.getElementById("resetPasswordBtn");
 const signOutBtn = document.getElementById("signOutBtn");
 const signedInControls = document.getElementById("signedInControls");
@@ -182,6 +191,96 @@ function checkLoginReady() {
   element.addEventListener("input", checkLoginReady)
 );
 
+function checkSignupReady() {
+  signupBtn.disabled = !firebaseAuth || !signupForm.checkValidity();
+}
+
+[signupEmail, signupPassword, signupConfirm].forEach((element) =>
+  element.addEventListener("input", checkSignupReady)
+);
+
+// ---- show / hide password ----------------------------------------------------
+
+document.querySelectorAll(".password-toggle").forEach((button) => {
+  button.addEventListener("click", () => {
+    const input = document.getElementById(button.dataset.target);
+    const reveal = input.type === "password";
+    input.type = reveal ? "text" : "password";
+    button.setAttribute("aria-pressed", String(reveal));
+    button.setAttribute("aria-label", reveal ? "Hide password" : "Show password");
+  });
+});
+
+function hideAllPasswords() {
+  document.querySelectorAll(".password-toggle").forEach((button) => {
+    document.getElementById(button.dataset.target).type = "password";
+    button.setAttribute("aria-pressed", "false");
+    button.setAttribute("aria-label", "Show password");
+  });
+}
+
+// ---- sign in / create account switch -----------------------------------------
+
+function showAuthMode(mode) {
+  const creating = mode === "signup";
+  signupForm.hidden = !creating;
+  loginForm.hidden = creating;
+  setStatus(authStatus, "", "idle");
+  if (creating) checkSignupReady();
+  else checkLoginReady();
+}
+
+showSignupBtn.addEventListener("click", () => showAuthMode("signup"));
+showLoginBtn.addEventListener("click", () => showAuthMode("login"));
+
+function signupErrorMessage(error) {
+  switch (error && error.code) {
+    case "auth/email-already-in-use":
+      return "An account with this email already exists. Sign in instead, or reset your password.";
+    case "auth/invalid-email":
+      return "That email address doesn't look right.";
+    case "auth/weak-password":
+      return "Choose a stronger password (at least 8 characters).";
+    case "auth/operation-not-allowed":
+      return "Account creation is switched off. Ask your administrator.";
+    case "auth/too-many-requests":
+      return "Too many attempts. Wait a few minutes and try again.";
+    case "auth/network-request-failed":
+      return "Network problem. Check your connection and try again.";
+    default:
+      return "Could not create the account. Please try again.";
+  }
+}
+
+signupForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!firebaseAuth || !signupForm.checkValidity()) return;
+  if (signupPassword.value !== signupConfirm.value) {
+    showAuthError("The two passwords don't match.");
+    return;
+  }
+  signupBtn.disabled = true;
+  setStatus(authStatus, "Creating your account…", "pending");
+  try {
+    await createUserWithEmailAndPassword(
+      firebaseAuth,
+      signupEmail.value.trim(),
+      signupPassword.value
+    );
+    signupForm.reset();
+    hideAllPasswords();
+    setStatus(
+      authStatus,
+      "Account created. An administrator must approve it before you can use ThibitiFare.",
+      "ok"
+    );
+  } catch (error) {
+    showAuthError(signupErrorMessage(error));
+  } finally {
+    checkSignupReady();
+  }
+});
+
 function showAuthError(message) {
   setStatus(authStatus, message, "error");
 }
@@ -200,18 +299,26 @@ function updateSignedInView(user, role) {
   if (user && (!previousUser || previousUser.uid !== user.uid)) {
     void resumePushAttempt(user.uid);
   }
-  loginForm.hidden = Boolean(user);
+  signedOutControls.hidden = Boolean(user);
   signedInControls.hidden = !user;
   const authorized = role === "admin" || role === "conductor";
   protectedApp.hidden = !authorized;
   adminTools.hidden = role !== "admin";
   if (!user) {
+    hideAllPasswords();
+    showAuthMode("login");
     setStatus(authStatus, "Sign in with your conductor account to continue.", "idle");
     checkRoleReady();
     return;
   }
+  hideAllPasswords();
   if (!authorized) {
-    setStatus(accountStatus, "This account has not been authorized. Contact your administrator.", "error");
+    setStatus(authStatus, "", "idle");
+    setStatus(
+      accountStatus,
+      `${user.email || "This account"} is waiting for administrator approval. Once approved, sign out and sign in again.`,
+      "pending"
+    );
     checkRoleReady();
     return;
   }
@@ -232,10 +339,14 @@ roleForm.addEventListener("submit", async (event) => {
   roleBtn.disabled = true;
   setStatus(roleStatus, "Updating account role…", "pending");
   try {
-    await postJSON(
-      `/admin/users/${encodeURIComponent(targetUid.value.trim())}/role`,
-      { role: targetRole.value }
-    );
+    const target = targetUid.value.trim();
+    if (target.includes("@")) {
+      await postJSON("/admin/role-assignments", { email: target, role: targetRole.value });
+    } else {
+      await postJSON(`/admin/users/${encodeURIComponent(target)}/role`, {
+        role: targetRole.value,
+      });
+    }
     setStatus(
       roleStatus,
       "Access updated. The user must sign in again for the change to take effect.",
@@ -359,7 +470,7 @@ async function initializeAuthentication() {
     const config = await response.json();
     if (!config.enabled) {
       showAuthError("Sign-in is not configured on the server yet.");
-      loginForm.hidden = true;
+      signedOutControls.hidden = true;
       return;
     }
 
@@ -382,7 +493,7 @@ async function initializeAuthentication() {
     });
   } catch {
     showAuthError("Sign-in could not be initialized. Please try again later.");
-    loginForm.hidden = true;
+    signedOutControls.hidden = true;
   }
 }
 

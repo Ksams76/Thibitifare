@@ -15,4 +15,6 @@ certs/*.pem
 !certs/README.txt
 # Private Firebase Admin credentials
 private/
-*service-account*.json
+*service-account*.json.env.local
+piplog.txt
+*.patch

@@ -19,15 +19,48 @@
 
     <section class="card" aria-labelledby="accountHeading">
       <h2 id="accountHeading">Conductor sign in</h2>
-      <p class="muted">Sign in with the account provided by your ThibitiFare administrator.</p>
-      <form id="loginForm">
-        <label for="loginEmail">Email</label>
-        <input id="loginEmail" name="email" type="email" autocomplete="username" required />
-        <label for="loginPassword">Password</label>
-        <input id="loginPassword" name="password" type="password" autocomplete="current-password" required />
-        <button id="loginBtn" type="submit" disabled>Sign in</button>
-        <button id="resetPasswordBtn" class="secondary" type="button" disabled>Reset password</button>
-      </form>
+      <p class="muted">Sign in with your conductor account. New here? Create an account and wait for your administrator to approve it.</p>
+      <div id="signedOutControls">
+        <form id="loginForm">
+          <label for="loginEmail">Email</label>
+          <input id="loginEmail" name="email" type="email" autocomplete="username" required />
+          <label for="loginPassword">Password</label>
+          <div class="password-field">
+            <input id="loginPassword" name="password" type="password" autocomplete="current-password" required />
+            <button type="button" class="password-toggle" data-target="loginPassword" aria-label="Show password" aria-pressed="false">
+            <svg class="icon-show" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="icon-hide" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+          </div>
+          <button id="loginBtn" type="submit" disabled>Sign in</button>
+          <button id="resetPasswordBtn" class="secondary" type="button" disabled>Reset password</button>
+          <p id="signupPrompt" class="hint">New conductor? <button id="showSignupBtn" class="link" type="button">Create an account</button></p>
+        </form>
+        <form id="signupForm" hidden>
+          <label for="signupEmail">Email</label>
+          <input id="signupEmail" name="email" type="email" autocomplete="email" required />
+          <label for="signupPassword">Password</label>
+          <div class="password-field">
+            <input id="signupPassword" name="password" type="password" autocomplete="new-password" minlength="8" required />
+            <button type="button" class="password-toggle" data-target="signupPassword" aria-label="Show password" aria-pressed="false">
+            <svg class="icon-show" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="icon-hide" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+          </div>
+          <p class="hint">At least 8 characters.</p>
+          <label for="signupConfirm">Confirm password</label>
+          <div class="password-field">
+            <input id="signupConfirm" name="confirm" type="password" autocomplete="new-password" minlength="8" required />
+            <button type="button" class="password-toggle" data-target="signupConfirm" aria-label="Show password" aria-pressed="false">
+            <svg class="icon-show" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="icon-hide" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+          </div>
+          <button id="signupBtn" type="submit" disabled>Create account</button>
+          <button id="showLoginBtn" class="secondary" type="button">Back to sign in</button>
+          <p class="hint">An administrator must approve your account before you can take payments.</p>
+        </form>
+      </div>
       <div id="signedInControls" hidden>
         <p id="accountStatus" class="status" role="status"></p>
         <button id="signOutBtn" class="secondary" type="button">Sign out</button>
@@ -38,10 +71,10 @@
     <div id="protectedApp" hidden>
     <section id="adminTools" class="card" hidden aria-labelledby="adminHeading">
       <h2 id="adminHeading">Administrator tools</h2>
-      <p class="muted">Assign an application role to an existing Firebase user.</p>
+      <p class="muted">Assign an application role to an existing user by email address (or Firebase UID).</p>
       <form id="roleForm">
-        <label for="targetUid">Firebase user UID</label>
-        <input id="targetUid" name="uid" type="text" maxlength="128" required />
+        <label for="targetUid">User email or Firebase UID</label>
+        <input id="targetUid" name="uid" type="text" maxlength="254" autocomplete="off" required />
         <label for="targetRole">Role</label>
         <select id="targetRole" name="role" required>
           <option value="conductor">Conductor</option>

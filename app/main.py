@@ -18,6 +18,7 @@ from .auth import (
     FirebaseUserNotFound,
     require_conductor,
     set_firebase_user_role,
+    set_firebase_user_role_by_email,
 )
 from .config import settings
 from .storage import StorageConflict, StorageError, StorageForbidden, TransactionStore
@@ -95,6 +96,8 @@ def _audit_action(method: str, path: str) -> str | None:
     ):
         return "stk.attempt.review"
     if method == "POST" and path.startswith("/admin/users/") and path.endswith("/role"):
+        return "identity.role.assign"
+    if method == "POST" and path == "/admin/role-assignments":
         return "identity.role.assign"
     return None
 
@@ -178,6 +181,11 @@ class VerifyRequest(BaseModel):
 
 
 class FirebaseRoleUpdateRequest(BaseModel):
+    role: Literal["admin", "conductor", "none"]
+
+
+class FirebaseRoleByEmailRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     role: Literal["admin", "conductor", "none"]
 
 
@@ -783,6 +791,30 @@ async def review_unknown_stk_attempt(
         "outcome": review["outcome"],
         "created_at": review["created_at"],
     }
+
+
+@app.post("/admin/role-assignments")
+async def update_firebase_user_role_by_email(
+    req: FirebaseRoleByEmailRequest,
+    request: Request,
+    _user: AuthenticatedUser = Depends(require_admin),
+):
+    try:
+        uid = await run_in_threadpool(
+            set_firebase_user_role_by_email, req.email.strip(), req.role
+        )
+    except FirebaseUserNotFound as error:
+        raise HTTPException(
+            status_code=404,
+            detail="No account with that email exists. Ask them to create one first.",
+        ) from error
+    except FirebaseAuthUnavailable as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Firebase account management is temporarily unavailable.",
+        ) from error
+    request.state.audit_subject_uid = uid
+    return {"uid": uid, "role": req.role, "requires_sign_in": True}
 
 
 @app.post("/admin/users/{uid}/role")

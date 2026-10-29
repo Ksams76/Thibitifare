@@ -132,6 +132,21 @@ def set_firebase_user_role(uid: str, role: str) -> None:
         ) from error
 
 
+def set_firebase_user_role_by_email(email: str, role: str) -> str:
+    """Look the account up by email, apply the role, and return its UID."""
+    app = get_firebase_app()
+    try:
+        user = auth.get_user_by_email(email, app=app)
+    except (auth.UserNotFoundError, ValueError) as error:
+        raise FirebaseUserNotFound from error
+    except exceptions.FirebaseError as error:
+        raise FirebaseAuthUnavailable(
+            "Firebase account management is temporarily unavailable."
+        ) from error
+    set_firebase_user_role(user.uid, role)
+    return user.uid
+
+
 async def require_conductor(
     request: Request,
     credentials_: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),

@@ -399,6 +399,55 @@ class PaymentFlowTests(unittest.TestCase):
             ),
         )
 
+    def test_admin_can_assign_role_by_email_and_it_is_audited(self):
+        with (
+            patch(
+                "app.auth.verify_firebase_id_token",
+                return_value={"uid": "test-admin", "role": "admin"},
+            ),
+            patch(
+                "app.main.set_firebase_user_role_by_email",
+                return_value="firebase-user-9",
+            ) as set_role,
+        ):
+            response = self.client.post(
+                "/admin/role-assignments",
+                json={"email": "new.conductor@example.com", "role": "conductor"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["uid"], "firebase-user-9")
+        set_role.assert_called_once_with("new.conductor@example.com", "conductor")
+        with closing(sqlite3.connect(main.store.database_path)) as connection:
+            event = connection.execute(
+                "SELECT actor_uid, action, subject_uid, response_status FROM audit_events"
+            ).fetchone()
+        self.assertEqual(
+            event, ("test-admin", "identity.role.assign", "firebase-user-9", 200)
+        )
+
+    def test_role_by_email_is_admin_only_and_reports_unknown_accounts(self):
+        body = {"email": "someone@example.com", "role": "conductor"}
+        with patch(
+            "app.auth.verify_firebase_id_token",
+            return_value={"uid": "a-conductor", "role": "conductor"},
+        ):
+            forbidden = self.client.post("/admin/role-assignments", json=body)
+        self.assertEqual(forbidden.status_code, 403)
+
+        with (
+            patch(
+                "app.auth.verify_firebase_id_token",
+                return_value={"uid": "test-admin", "role": "admin"},
+            ),
+            patch(
+                "app.main.set_firebase_user_role_by_email",
+                side_effect=main.FirebaseUserNotFound,
+            ),
+        ):
+            missing = self.client.post("/admin/role-assignments", json=body)
+        self.assertEqual(missing.status_code, 404)
+
     def test_daraja_callback_remains_public_and_is_audited_as_provider_event(self):
         response = self._callback("unknown-checkout")
 

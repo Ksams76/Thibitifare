@@ -209,3 +209,55 @@ button:disabled {
     color: #d7eee2;
   }
 }
+
+/* ---- password show/hide and sign-up ---- */
+.password-field {
+  position: relative;
+}
+
+.password-field input {
+  padding-right: 48px;
+}
+
+button.password-toggle,
+button.password-toggle:hover:not(:disabled) {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  width: 36px;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 8px;
+}
+
+button.password-toggle:hover:not(:disabled) {
+  color: var(--green);
+}
+
+.password-toggle .icon-hide,
+.password-toggle[aria-pressed="true"] .icon-show {
+  display: none;
+}
+
+.password-toggle[aria-pressed="true"] .icon-hide {
+  display: block;
+}
+
+button.link,
+button.link:hover:not(:disabled) {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  background: none;
+  color: var(--green);
+  font-size: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+}
